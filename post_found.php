@@ -3,15 +3,26 @@
 session_start();
 
 include 'includes/db.php';
-include 'includes/ai_questions.php';
+include 'includes/csrf.php';
+include 'includes/validation.php';
 
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit();
 }
 
+// Generate CSRF token if not exists
+$csrf_token = generateCSRFToken();
+
 $questions = array();
 $temp_image = "";
+$error = "";
+$success = "";
+
+// Create uploads directory if it doesn't exist
+if (!is_dir('uploads')) {
+    mkdir('uploads', 0755, true);
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -19,30 +30,53 @@ $temp_image = "";
 |--------------------------------------------------------------------------
 */
 if (isset($_POST['generate_questions'])) {
-
-    $title = mysqli_real_escape_string($conn, $_POST['title']);
-    $description = mysqli_real_escape_string($conn, $_POST['description']);
-    $category = mysqli_real_escape_string($conn, $_POST['category']);
-
-    // Upload image temporarily
-    if (isset($_FILES['image']) && !empty($_FILES['image']['name'])) {
-
-        $temp_image =
-            time() . '_' .
-            str_replace(' ', '_', $_FILES['image']['name']);
-
-        move_uploaded_file(
-            $_FILES['image']['tmp_name'],
-            "uploads/" . $temp_image
-        );
+    
+    // Verify CSRF token
+    if (!verifyCSRFToken($_POST['csrf_token'] ?? '')) {
+        $error = "Invalid request. Please try again.";
+    } else {
+        
+        $title = sanitizeInput($_POST['title'] ?? '');
+        $description = sanitizeInput($_POST['description'] ?? '');
+        $category = sanitizeInput($_POST['category'] ?? '');
+        
+        // Validate required fields
+        if (empty($title) || empty($description) || empty($category)) {
+            $error = "All fields are required.";
+        } else if (strlen($title) < 3 || strlen($title) > 200) {
+            $error = "Title must be between 3 and 200 characters.";
+        } else if (strlen($description) < 10 || strlen($description) > 2000) {
+            $error = "Description must be between 10 and 2000 characters.";
+        } else {
+            
+            // Validate file upload
+            if (isset($_FILES['image']) && !empty($_FILES['image']['name'])) {
+                
+                $fileValidation = validateFileUpload($_FILES['image']);
+                
+                if (!$fileValidation['valid']) {
+                    $error = $fileValidation['message'];
+                } else {
+                    
+                    // Sanitize filename and move file
+                    $temp_image = sanitizeFilename($_FILES['image']['name']);
+                    $upload_path = "uploads/" . $temp_image;
+                    
+                    if (!move_uploaded_file($_FILES['image']['tmp_name'], $upload_path)) {
+                        error_log("File upload failed for: " . $temp_image);
+                        $error = "Failed to upload image. Please try again.";
+                    } else {
+                        // Generate AI Questions
+                        include 'includes/ai_questions.php';
+                        $questions = generateVerificationQuestions($title, $description, $category);
+                        $success = "Image uploaded and questions generated successfully!";
+                    }
+                }
+            } else {
+                $error = "Please upload an image.";
+            }
+        }
     }
-
-    // Generate AI-based dynamic questions
-    $questions = generateVerificationQuestions(
-        $title,
-        $description,
-        $category
-    );
 }
 
 /*
@@ -51,82 +85,118 @@ if (isset($_POST['generate_questions'])) {
 |--------------------------------------------------------------------------
 */
 if (isset($_POST['submit'])) {
-
-    $title = mysqli_real_escape_string($conn, $_POST['title']);
-    $description = mysqli_real_escape_string($conn, $_POST['description']);
-    $category = mysqli_real_escape_string($conn, $_POST['category']);
-
-    $item_type = "found";
-    $user_id = $_SESSION['user_id'];
-
-    // Use temporary uploaded image
-    $image = mysqli_real_escape_string($conn, $_POST['temp_image']);
-
-    // Generated questions
-    $verify_q1 = mysqli_real_escape_string($conn, $_POST['verify_q1']);
-    $verify_q2 = mysqli_real_escape_string($conn, $_POST['verify_q2']);
-    $verify_q3 = mysqli_real_escape_string($conn, $_POST['verify_q3']);
-    $verify_q4 = mysqli_real_escape_string($conn, $_POST['verify_q4']);
-
-    // Finder's secret answers
-    $answer1 = mysqli_real_escape_string($conn, $_POST['answer1']);
-    $answer2 = mysqli_real_escape_string($conn, $_POST['answer2']);
-    $answer3 = mysqli_real_escape_string($conn, $_POST['answer3']);
-    $answer4 = mysqli_real_escape_string($conn, $_POST['answer4']);
-
-    // Insert into database
-    $sql = "INSERT INTO items(
-        title,
-        description,
-        category,
-        item_type,
-        image,
-        user_id,
-        verify_q1,
-        verify_q2,
-        verify_q3,
-        verify_q4,
-        answer1,
-        answer2,
-        answer3,
-        answer4
-    ) VALUES (
-        '$title',
-        '$description',
-        '$category',
-        '$item_type',
-        '$image',
-        '$user_id',
-        '$verify_q1',
-        '$verify_q2',
-        '$verify_q3',
-        '$verify_q4',
-        '$answer1',
-        '$answer2',
-        '$answer3',
-        '$answer4'
-    )";
-
-    mysqli_query($conn, $sql);
-
-    echo "<script>
-            alert('Found Item Posted Successfully with AI Verification Questions!');
-            window.location='dashboard.php';
-          </script>";
-    exit();
+    
+    // Verify CSRF token
+    if (!verifyCSRFToken($_POST['csrf_token'] ?? '')) {
+        $error = "Invalid request. Please try again.";
+    } else {
+        
+        $title = sanitizeInput($_POST['title'] ?? '');
+        $description = sanitizeInput($_POST['description'] ?? '');
+        $category = sanitizeInput($_POST['category'] ?? '');
+        $temp_image = sanitizeInput($_POST['temp_image'] ?? '');
+        
+        // Validate fields
+        if (empty($title) || empty($description) || empty($category) || empty($temp_image)) {
+            $error = "All fields are required.";
+        } else {
+            
+            $item_type = "found";
+            $user_id = (int)$_SESSION['user_id'];
+            
+            // Verify image file exists
+            if (!file_exists("uploads/" . $temp_image)) {
+                $error = "Image file not found. Please upload again.";
+            } else {
+                
+                // Get verification answers
+                $verify_q1 = sanitizeInput($_POST['verify_q1'] ?? '');
+                $verify_q2 = sanitizeInput($_POST['verify_q2'] ?? '');
+                $verify_q3 = sanitizeInput($_POST['verify_q3'] ?? '');
+                $verify_q4 = sanitizeInput($_POST['verify_q4'] ?? '');
+                
+                $answer1 = sanitizeInput($_POST['answer1'] ?? '');
+                $answer2 = sanitizeInput($_POST['answer2'] ?? '');
+                $answer3 = sanitizeInput($_POST['answer3'] ?? '');
+                $answer4 = sanitizeInput($_POST['answer4'] ?? '');
+                
+                // Validate answers
+                if (empty($answer1) || empty($answer2) || empty($answer3) || empty($answer4)) {
+                    $error = "Please answer all verification questions.";
+                } else {
+                    
+                    // Use prepared statement to insert item
+                    $stmt = $conn->prepare(
+                        "INSERT INTO items(
+                            title,
+                            description,
+                            category,
+                            item_type,
+                            image,
+                            user_id,
+                            verify_q1,
+                            verify_q2,
+                            verify_q3,
+                            verify_q4,
+                            answer1,
+                            answer2,
+                            answer3,
+                            answer4,
+                            status,
+                            created_at
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?,
+                            ?, ?, 'active', NOW()
+                        )"
+                    );
+                    
+                    if (!$stmt) {
+                        error_log("Prepare failed: " . $conn->error);
+                        $error = "Database error. Please try again.";
+                    } else {
+                        
+                        $status = "active";
+                        $stmt->bind_param(
+                            "sssssissssssss",
+                            $title, $description, $category, $item_type, $temp_image, $user_id,
+                            $verify_q1, $verify_q2, $verify_q3, $verify_q4,
+                            $answer1, $answer2, $answer3, $answer4
+                        );
+                        
+                        if (!$stmt->execute()) {
+                            error_log("Execute failed: " . $stmt->error);
+                            $error = "Failed to post item. Please try again.";
+                        } else {
+                            $success = "Found Item Posted Successfully!";
+                            error_log("Found item posted by user: " . $user_id);
+                            
+                            // Redirect after 2 seconds
+                            echo "<script>setTimeout(function(){ window.location='dashboard.php'; }, 2000);</script>";
+                            $questions = array();
+                            $temp_image = "";
+                            $_POST = array();
+                        }
+                        
+                        $stmt->close();
+                    }
+                }
+            }
+        }
+    }
 }
 
 if (isset($_POST['temp_image'])) {
-    $temp_image = $_POST['temp_image'];
+    $temp_image = sanitizeInput($_POST['temp_image']);
 }
 
-$selected_category = isset($_POST['category']) ? $_POST['category'] : "";
+$selected_category = isset($_POST['category']) ? sanitizeInput($_POST['category']) : "";
 
 ?>
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Post Found Item</title>
+    <title>Post Found Item - TraceBack</title>
     <meta charset="UTF-8">
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0">
@@ -163,6 +233,24 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
             color:#111827;
         }
 
+        .error{
+            background:#fecaca;
+            color:#991b1b;
+            padding:12px;
+            margin-bottom:15px;
+            border-radius:5px;
+            border:1px solid #dc2626;
+        }
+
+        .success{
+            background:#dcfce7;
+            color:#166534;
+            padding:12px;
+            margin-bottom:15px;
+            border-radius:5px;
+            border:1px solid #16a34a;
+        }
+
         input,
         textarea,
         select{
@@ -172,6 +260,14 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
             border:1px solid #ccc;
             border-radius:5px;
             font-size:16px;
+            font-family: Arial;
+        }
+
+        input:focus,
+        textarea:focus,
+        select:focus{
+            border-color:#2563eb;
+            outline:none;
         }
 
         textarea{
@@ -188,6 +284,7 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
             border-radius:5px;
             font-size:16px;
             cursor:pointer;
+            transition:0.3s;
         }
 
         .generate-btn{
@@ -236,6 +333,27 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
             border-radius:8px;
             border:1px solid #ddd;
         }
+
+        .file-input-label{
+            display:block;
+            margin-top:15px;
+            padding:12px;
+            background:#eff6ff;
+            border:2px dashed #2563eb;
+            border-radius:5px;
+            text-align:center;
+            cursor:pointer;
+            color:#2563eb;
+            font-weight:bold;
+        }
+
+        .file-input-label:hover{
+            background:#bfdbfe;
+        }
+
+        input[type="file"]{
+            display:none;
+        }
     </style>
 </head>
 <body>
@@ -244,19 +362,31 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
 
     <h2>Post Found Item</h2>
 
+    <?php if (!empty($error)) { ?>
+        <div class="error"><?php echo $error; ?></div>
+    <?php } ?>
+
+    <?php if (!empty($success)) { ?>
+        <div class="success"><?php echo $success; ?></div>
+    <?php } ?>
+
     <form method="POST" enctype="multipart/form-data">
+
+        <!-- CSRF Token -->
+        <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
 
         <input
             type="text"
             name="title"
             placeholder="Item Title"
             required
-            value="<?php echo isset($_POST['title']) ? htmlspecialchars($_POST['title']) : ''; ?>">
+            maxlength="200"
+            value="<?php echo isset($_POST['title']) ? htmlspecialchars($_POST['title'], ENT_QUOTES, 'UTF-8') : ''; ?>">
 
         <textarea
             name="description"
-            placeholder="Description"
-            required><?php echo isset($_POST['description']) ? htmlspecialchars($_POST['description']) : ''; ?></textarea>
+            placeholder="Description (10-2000 characters)"
+            required><?php echo isset($_POST['description']) ? htmlspecialchars($_POST['description'], ENT_QUOTES, 'UTF-8') : ''; ?></textarea>
 
         <select name="category" required>
             <option value="">Select Category</option>
@@ -272,18 +402,22 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
 
         <?php if (empty($temp_image)) { ?>
 
-            <input type="file" name="image" required>
+            <label for="image-input" class="file-input-label">
+                📷 Click to upload image (JPG, PNG, GIF - Max 5MB)
+            </label>
+            <input type="file" id="image-input" name="image" accept="image/*" required>
 
         <?php } else { ?>
 
             <input
                 type="hidden"
                 name="temp_image"
-                value="<?php echo htmlspecialchars($temp_image); ?>">
+                value="<?php echo htmlspecialchars($temp_image, ENT_QUOTES, 'UTF-8'); ?>">
 
             <div class="preview">
                 <p><strong>Uploaded Image Preview:</strong></p>
-                <img src="uploads/<?php echo htmlspecialchars($temp_image); ?>">
+                <img src="uploads/<?php echo htmlspecialchars($temp_image, ENT_QUOTES, 'UTF-8'); ?>"
+                     alt="Uploaded image">
             </div>
 
         <?php } ?>
@@ -302,27 +436,29 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
             <input
                 type="hidden"
                 name="temp_image"
-                value="<?php echo htmlspecialchars($temp_image); ?>">
+                value="<?php echo htmlspecialchars($temp_image, ENT_QUOTES, 'UTF-8'); ?>">
 
             <div class="question-box">
 
                 <h3>AI Generated Verification Questions</h3>
+                <p style="color:#666; font-size:14px; margin-top:10px;">These questions help verify the owner's identity when they claim this item.</p>
 
                 <?php for ($i = 0; $i < 4; $i++) { ?>
 
                     <label>
-                        <?php echo htmlspecialchars($questions[$i]); ?>
+                        <?php echo htmlspecialchars($questions[$i], ENT_QUOTES, 'UTF-8'); ?>
                     </label>
 
                     <input
                         type="text"
                         name="answer<?php echo $i + 1; ?>"
+                        placeholder="Your answer"
                         required>
 
                     <input
                         type="hidden"
                         name="verify_q<?php echo $i + 1; ?>"
-                        value="<?php echo htmlspecialchars($questions[$i]); ?>">
+                        value="<?php echo htmlspecialchars($questions[$i], ENT_QUOTES, 'UTF-8'); ?>">
 
                 <?php } ?>
 
@@ -340,6 +476,29 @@ $selected_category = isset($_POST['category']) ? $_POST['category'] : "";
     </form>
 
 </div>
+
+<script>
+document.getElementById('image-input')?.addEventListener('change', function(e) {
+    var file = e.target.files[0];
+    if (file) {
+        // Client-side validation
+        var validTypes = ['image/jpeg', 'image/png', 'image/gif'];
+        var maxSize = 5 * 1024 * 1024; // 5MB
+        
+        if (!validTypes.includes(file.type)) {
+            alert('Invalid file type. Please upload JPG, PNG, or GIF.');
+            e.target.value = '';
+            return;
+        }
+        
+        if (file.size > maxSize) {
+            alert('File is too large. Maximum size is 5MB.');
+            e.target.value = '';
+            return;
+        }
+    }
+});
+</script>
 
 </body>
 </html>

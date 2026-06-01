@@ -1,28 +1,59 @@
 <?php
 
 include 'includes/db.php';
+include 'includes/validation.php';
 
-if(isset($_GET['search'])){
-
-    $search =
-    $_GET['search'];
-
-    $sql =
-    "SELECT * FROM items
-    WHERE title LIKE '%$search%'
-    OR description LIKE '%$search%'
-    OR category LIKE '%$search%'
-    ORDER BY id DESC";
-
+// Determine which items to fetch
+if(isset($_GET['search']) && !empty($_GET['search'])){
+    
+    // Sanitize search input
+    $search = sanitizeInput($_GET['search']);
+    
+    // Use prepared statement to prevent SQL injection
+    $stmt = $conn->prepare(
+        "SELECT id, title, description, category, image, status, user_id, created_at 
+         FROM items 
+         WHERE (title LIKE ? OR description LIKE ? OR category LIKE ?) 
+         ORDER BY id DESC"
+    );
+    
+    if (!$stmt) {
+        error_log("Prepare failed: " . $conn->error);
+        die("Database error. Please try again.");
+    }
+    
+    // Bind parameters - use wildcard pattern in PHP, not in SQL
+    $searchPattern = "%" . $search . "%";
+    $stmt->bind_param("sss", $searchPattern, $searchPattern, $searchPattern);
+    
+    if (!$stmt->execute()) {
+        error_log("Execute failed: " . $stmt->error);
+        die("Database error. Please try again.");
+    }
+    
+    $result = $stmt->get_result();
+    
 }else{
-
-    $sql =
-    "SELECT * FROM items
-    ORDER BY id DESC";
+    
+    // Fetch all items ordered by newest first
+    $stmt = $conn->prepare(
+        "SELECT id, title, description, category, image, status, user_id, created_at 
+         FROM items 
+         ORDER BY id DESC"
+    );
+    
+    if (!$stmt) {
+        error_log("Prepare failed: " . $conn->error);
+        die("Database error. Please try again.");
+    }
+    
+    if (!$stmt->execute()) {
+        error_log("Execute failed: " . $stmt->error);
+        die("Database error. Please try again.");
+    }
+    
+    $result = $stmt->get_result();
 }
-
-$result =
-mysqli_query($conn,$sql);
 
 ?>
 
@@ -31,7 +62,7 @@ mysqli_query($conn,$sql);
 
 <head>
 
-<title>Browse Items</title>
+<title>Browse Items - TraceBack</title>
 
 <meta charset="UTF-8">
 
@@ -267,6 +298,10 @@ header a:hover{
     color:red;
 }
 
+.status.claimed{
+    color: #16a34a;
+}
+
 .no-data{
 
     text-align:center;
@@ -319,7 +354,7 @@ header a:hover{
 
 <header>
 
-<h2>TraceBack</h2>
+<h2>TraceBack LFIS</h2>
 
 <nav>
 
@@ -348,11 +383,7 @@ type="text"
 name="search"
 class="search-box"
 placeholder="Search by title, category or description..."
-value="<?php
-if(isset($_GET['search'])){
-echo $_GET['search'];
-}
-?>">
+value="<?php echo isset($_GET['search']) ? htmlspecialchars($_GET['search'], ENT_QUOTES, 'UTF-8') : ''; ?>">
 
 <button
 type="submit"
@@ -368,32 +399,32 @@ Search
 
 <?php
 
-if(mysqli_num_rows($result)>0){
+if($result && $result->num_rows > 0){
 
-while($row=mysqli_fetch_assoc($result)){
+    while($row = $result->fetch_assoc()){
 
 ?>
 
 <a
-href="item.php?id=<?php echo $row['id']; ?>"
+href="item.php?id=<?php echo (int)$row['id']; ?>"
 class="item-link">
 
 <div class="card">
 
 <?php
 
-$image_path =
-"uploads/".$row['image'];
+$image_path = "uploads/" . htmlspecialchars($row['image'], ENT_QUOTES, 'UTF-8');
 
 if(
-$row['image'] != "" &&
-file_exists($image_path)
+    !empty($row['image']) &&
+    file_exists($image_path)
 ){
 
 ?>
 
 <img
-src="<?php echo $image_path; ?>">
+src="<?php echo $image_path; ?>"
+alt="<?php echo htmlspecialchars($row['title'], ENT_QUOTES, 'UTF-8'); ?>">
 
 <?php
 
@@ -417,34 +448,25 @@ No Image
 
 <h3>
 
-<?php
-echo $row['title'];
-?>
+<?php echo htmlspecialchars($row['title'], ENT_QUOTES, 'UTF-8'); ?>
 
 </h3>
 
 <p>
 
-<?php
-echo $row['description'];
-?>
+<?php echo htmlspecialchars(substr($row['description'], 0, 100), ENT_QUOTES, 'UTF-8'); ?><?php if(strlen($row['description']) > 100) echo '...'; ?>
 
 </p>
 
-<div class="category">
+<span class="category">
 
-<?php
-echo $row['category'];
-?>
+<?php echo htmlspecialchars($row['category'], ENT_QUOTES, 'UTF-8'); ?>
 
-</div>
+</span>
 
-<div class="status">
+<div class="status <?php echo strtolower($row['status']) === 'claimed' ? 'claimed' : ''; ?>">
 
-Status:
-<?php
-echo ucfirst($row['status']);
-?>
+Status: <?php echo htmlspecialchars(ucfirst($row['status']), ENT_QUOTES, 'UTF-8'); ?>
 
 </div>
 
@@ -470,6 +492,10 @@ No Items Found
 
 <?php
 
+}
+
+if(isset($stmt)) {
+    $stmt->close();
 }
 
 ?>
