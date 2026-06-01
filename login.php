@@ -2,43 +2,85 @@
 
 session_start();
 include 'includes/db.php';
+include 'includes/csrf.php';
+include 'includes/validation.php';
+
+// Generate CSRF token if not exists
+$csrf_token = generateCSRFToken();
+
+$error = "";
+$success = "";
 
 if (isset($_POST['login'])) {
-
-    $email = mysqli_real_escape_string($conn, $_POST['email']);
-    $password = $_POST['password'];
-
-    $sql = "SELECT * FROM users WHERE email='$email'";
-    $result = mysqli_query($conn, $sql);
-
-    if (mysqli_num_rows($result) > 0) {
-
-        $user = mysqli_fetch_assoc($result);
-
-        if (password_verify($password, $user['password'])) {
-
-            // Store user session
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['fullname'] = $user['fullname'];
-            $_SESSION['role'] = $user['role'];
-
-            // If user is admin, store admin session variables
-            // but DO NOT redirect to admin dashboard automatically
-            if ($user['role'] === 'admin') {
-                $_SESSION['admin_id'] = $user['id'];
-                $_SESSION['admin_name'] = $user['fullname'];
-            }
-
-            // Redirect ALL users (including admins) to normal dashboard
-            header("Location: dashboard.php");
-            exit();
-
-        } else {
-            $error = "Invalid password.";
-        }
-
+    
+    // Verify CSRF token
+    if (!verifyCSRFToken($_POST['csrf_token'] ?? '')) {
+        $error = "Invalid request. Please try again.";
     } else {
-        $error = "Account not found.";
+        // Sanitize inputs
+        $email = filter_var($_POST['email'] ?? '', FILTER_SANITIZE_EMAIL);
+        $password = $_POST['password'] ?? '';
+        
+        // Validate email format
+        if (!validateEmail($email)) {
+            $error = "Invalid email format.";
+        } else if (empty($password)) {
+            $error = "Password is required.";
+        } else {
+            // Use prepared statement to prevent SQL injection
+            $stmt = $conn->prepare("SELECT id, fullname, email, password, role FROM users WHERE email = ?");
+            
+            if (!$stmt) {
+                error_log("Prepare failed: " . $conn->error);
+                $error = "Database error. Please try again.";
+            } else {
+                // Bind parameter
+                $stmt->bind_param("s", $email);
+                
+                // Execute query
+                if (!$stmt->execute()) {
+                    error_log("Execute failed: " . $stmt->error);
+                    $error = "Database error. Please try again.";
+                } else {
+                    // Get result
+                    $result = $stmt->get_result();
+                    
+                    if ($result->num_rows > 0) {
+                        $user = $result->fetch_assoc();
+                        
+                        // Verify password using password_verify (secure)
+                        if (password_verify($password, $user['password'])) {
+                            
+                            // Regenerate session ID for security
+                            session_regenerate_id(true);
+                            
+                            // Store user session
+                            $_SESSION['user_id'] = $user['id'];
+                            $_SESSION['fullname'] = $user['fullname'];
+                            $_SESSION['email'] = $user['email'];
+                            $_SESSION['role'] = $user['role'];
+                            
+                            // Log successful login
+                            error_log("User logged in: " . $user['email'] . " at " . date('Y-m-d H:i:s'));
+                            
+                            // Redirect to dashboard
+                            header("Location: dashboard.php");
+                            exit();
+                            
+                        } else {
+                            $error = "Invalid password.";
+                            // Log failed attempt
+                            error_log("Failed login attempt for: " . $email . " at " . date('Y-m-d H:i:s'));
+                        }
+                    } else {
+                        $error = "Account not found.";
+                        // Log failed attempt
+                        error_log("Login attempt for non-existent account: " . $email . " at " . date('Y-m-d H:i:s'));
+                    }
+                }
+                $stmt->close();
+            }
+        }
     }
 }
 
@@ -115,11 +157,22 @@ if (isset($_POST['login'])) {
 
         .error{
             background:#fecaca;
-            color:red;
+            color:#991b1b;
             padding:12px;
             margin-bottom:15px;
             border-radius:5px;
             text-align:center;
+            border:1px solid #dc2626;
+        }
+
+        .success{
+            background:#dcfce7;
+            color:#166534;
+            padding:12px;
+            margin-bottom:15px;
+            border-radius:5px;
+            text-align:center;
+            border:1px solid #16a34a;
         }
 
         .links{
@@ -146,13 +199,22 @@ if (isset($_POST['login'])) {
 
     <h2>User Login</h2>
 
-    <?php if (isset($error)) { ?>
+    <?php if (!empty($error)) { ?>
         <div class="error">
-            <?php echo $error; ?>
+            <?php echo sanitizeInput($error); ?>
+        </div>
+    <?php } ?>
+
+    <?php if (!empty($success)) { ?>
+        <div class="success">
+            <?php echo sanitizeInput($success); ?>
         </div>
     <?php } ?>
 
     <form method="POST">
+
+        <!-- CSRF Token -->
+        <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
 
         <input
             type="email"
